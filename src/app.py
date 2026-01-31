@@ -16,6 +16,7 @@ DATA_DIR = os.path.join(APP_DIR, "data")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 DB_PATH = os.path.join(DATA_DIR, "tracker.db")
 REPORT_PATH = os.path.join(DATA_DIR, "last_report.txt")
+ARUCO_DATA_PATH = os.path.join(DATA_DIR, "aruco_data.json")
 
 
 class TrackerApp(tk.Tk):
@@ -72,6 +73,11 @@ class TrackerApp(tk.Tk):
             self.mode_frame, text="Камера", command=self._open_camera
         )
         self.camera_button.pack(side=tk.LEFT, padx=6)
+
+        self.aruco_button = ttk.Button(
+            self.mode_frame, text="ArUco генератор", command=self._open_aruco_generator
+        )
+        self.aruco_button.pack(side=tk.LEFT, padx=6)
 
         self.path_frame = ttk.Frame(self, padding=12)
         self.path_frame.pack(side=tk.TOP, fill=tk.X)
@@ -140,6 +146,9 @@ class TrackerApp(tk.Tk):
 
     def _open_camera(self) -> None:
         CameraWindow(self)
+
+    def _open_aruco_generator(self) -> None:
+        ArucoGeneratorWindow(self)
 
     def _ensure_directory(self) -> bool:
         if not self.selected_root:
@@ -435,6 +444,124 @@ class DependencyDialog(tk.Toplevel):
             "Зависимости установлены. Откройте окно камеры снова.",
         )
         self.destroy()
+
+class ArucoGeneratorWindow(tk.Toplevel):
+    def __init__(self, parent: TrackerApp) -> None:
+        super().__init__(parent)
+        self.title("ArUco генератор")
+        self.resizable(False, False)
+        self.parent = parent
+        self.cv2 = None
+        self._load_cv2()
+
+        container = ttk.Frame(self, padding=12)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        self.dictionary_names = [
+            "DICT_4X4_50",
+            "DICT_4X4_100",
+            "DICT_5X5_100",
+            "DICT_6X6_100",
+        ]
+
+        self.inputs = {}
+        self._add_field(container, "Словарь", "dictionary", self.dictionary_names[0])
+        self._add_field(container, "ID маркера", "marker_id", "0")
+        self._add_field(container, "Размер (px)", "size", "400")
+        self._add_field(container, "Описание", "description", "")
+
+        button_frame = ttk.Frame(container)
+        button_frame.pack(fill=tk.X, pady=(12, 0))
+        ttk.Button(button_frame, text="Сгенерировать", command=self._generate).pack(
+            side=tk.LEFT, padx=6
+        )
+        ttk.Button(button_frame, text="Закрыть", command=self.destroy).pack(
+            side=tk.RIGHT, padx=6
+        )
+
+    def _load_cv2(self) -> None:
+        try:
+            self.cv2 = importlib.import_module("cv2")
+        except Exception:
+            DependencyDialog(self)
+            self.destroy()
+
+    def _add_field(self, parent: ttk.Frame, label: str, key: str, value: str) -> None:
+        frame = ttk.Frame(parent)
+        frame.pack(fill=tk.X, pady=4)
+        ttk.Label(frame, text=label).pack(side=tk.LEFT)
+        if key == "dictionary":
+            combo = ttk.Combobox(frame, values=self.dictionary_names, state="readonly")
+            combo.pack(side=tk.RIGHT, fill=tk.X, expand=True)
+            combo.set(value)
+            self.inputs[key] = combo
+            return
+        entry = ttk.Entry(frame)
+        entry.pack(side=tk.RIGHT, fill=tk.X, expand=True)
+        entry.insert(0, value)
+        self.inputs[key] = entry
+
+    def _generate(self) -> None:
+        if not self.cv2:
+            messagebox.showerror("Ошибка", "OpenCV недоступен.")
+            return
+        try:
+            dictionary_name = self.inputs["dictionary"].get()
+            marker_id = int(self.inputs["marker_id"].get())
+            size = int(self.inputs["size"].get())
+        except ValueError:
+            messagebox.showerror("Ошибка", "Проверьте ID и размер.")
+            return
+        description = self.inputs["description"].get().strip()
+
+        try:
+            aruco = self.cv2.aruco
+            dictionary = aruco.getPredefinedDictionary(getattr(aruco, dictionary_name))
+            marker = aruco.generateImageMarker(dictionary, marker_id, size)
+        except Exception:
+            messagebox.showerror(
+                "Ошибка", "Не удалось создать маркер. Проверьте ID и словарь."
+            )
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            title="Сохранить ArUco",
+            defaultextension=".png",
+            filetypes=[("PNG", "*.png"), ("JPEG", "*.jpg;*.jpeg")],
+        )
+        if not file_path:
+            return
+        if not self.cv2.imwrite(file_path, marker):
+            messagebox.showerror("Ошибка", "Не удалось сохранить изображение.")
+            return
+        self._store_metadata(file_path, dictionary_name, marker_id, size, description)
+        messagebox.showinfo("Готово", f"Маркер сохранен: {file_path}")
+
+    def _store_metadata(
+        self, file_path: str, dictionary: str, marker_id: int, size: int, description: str
+    ) -> None:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        payload = {
+            "file_path": file_path,
+            "dictionary": dictionary,
+            "marker_id": marker_id,
+            "size": size,
+            "description": description,
+        }
+        data = []
+        if os.path.exists(ARUCO_DATA_PATH):
+            try:
+                import json
+
+                with open(ARUCO_DATA_PATH, "r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except Exception:
+                data = []
+        data.append(payload)
+        with open(ARUCO_DATA_PATH, "w", encoding="utf-8") as handle:
+            import json
+
+            json.dump(data, handle, indent=2, ensure_ascii=False)
 
 
 if __name__ == "__main__":
